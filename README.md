@@ -1,4 +1,4 @@
-## 📋 Requirements
+> ## 📋 Requirements
 
 | Tool | Purpose | Install |
 |------|---------|---------|
@@ -10,8 +10,16 @@
 
 FFmpeg must be in your system PATH. GPU recommended, falls back to CPU automatically.
 
+---
 
-## 🌐 Open the Interactive Guide
+> ### ⚠️ Before You Run
+
+> [!IMPORTANT]
+> Place **pipeline.py** and **pipeline.bat** in the **same folder as your videos** before running. The script only processes videos it finds next to it.
+
+---
+
+> ## 🌐 Open the Interactive Guide
 
 The full setup guide (bilingual EN/AR, with step-by-step instructions) is hosted here:
 

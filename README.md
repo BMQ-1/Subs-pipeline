@@ -23,6 +23,6 @@ FFmpeg must be in your system PATH. GPU recommended, falls back to CPU automatic
 
 The full setup guide (bilingual EN/AR, with step-by-step instructions) is hosted here:
 
-🔗 [(https://bmq-1.github.io/Sub/)] ←
+🔗 [(https://bmq-1.github.io/Subs-pipeline/)] ←
 
 It covers every install step, the API key setup, and troubleshooting.

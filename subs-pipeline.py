@@ -102,7 +102,7 @@ MEDIA_EXTS: Tuple[str, ...] = (
 AUDIO_EXTS: Tuple[str, ...] = (".mp3", ".wav", ".m4a", ".aac", ".flac", ".opus")
 
 # API Configuration
-DEFAULT_GEMINI_MODEL = "gemini-1.5-flash"
+DEFAULT_GEMINI_MODEL = "gemini-3.5-flash"
 GEMINI_URL_TEMPLATE = (
     "https://generativelanguage.googleapis.com/v1beta/models/"
     "{model}:generateContent?key={key}"

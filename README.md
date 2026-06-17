@@ -1,10 +1,9 @@
----
+***
 
 # 🎬 Subs-pipeline
-
 An intelligent, monolithic media transcription, structural translation, and muxing pipeline. This application automates the generation of synchronized, multi-language subtitles locally using `faster-whisper` and translates them via the **Google Gemini 3.5 Flash** API.
 
----
+***
 
 ## ⚖️ Disclaimer
 

@@ -1,63 +1,47 @@
-> ## 📋 Requirements
+# 🎬 Subs-pipeline
 
-| Tool | Purpose | Install |
-|------|---------|---------|
-| Python 3.10+ | Runs the script | [python.org](https://www.python.org/downloads/) |
-| faster-whisper | Transcription | `pip install faster-whisper` |
-| gst-translator | Translation via Gemini | `pip install gemini-srt-translator` |
-| FFmpeg | Remux/embed subtitles | [ffmpeg.org](https://ffmpeg.org/download.html) |
-| Gemini API Key | Powers translation | [aistudio.google.com](https://aistudio.google.com/app/apikey) (free) |
-
-FFmpeg must be in your system PATH. GPU recommended, falls back to CPU automatically.
+An intelligent, single-file media transcription, structural translation, and muxing pipeline. This application automates the process of generating accurate, multi-language subtitles locally using `faster-whisper` and translating them through the Google Gemini API, while ensuring timestamps remain synchronized.
 
 ---
 
-> ### ⚠️ Before You Run
+## ✨ Features
 
-> [!IMPORTANT]
-> Place **pipeline.py** and **pipeline.bat** in the **same folder as your videos** before running. The script only processes videos it finds next to it.
-
----
-
-> ## 🌐 Open the Interactive Guide
-
-The full setup guide (bilingual EN/AR, with step-by-step instructions) is hosted here:
-
-🔗 [(https://bmq-1.github.io/Subs-pipeline/)] ←
-
-It covers every install step, the API key setup, and troubleshooting.
-
-
-
-<br><br><br><br><br><br>
-
-
-
-### 📋 المتطلبات
-
-| الأداة | الغرض | التثبيت |
-|--------|-------|---------|
-| Python 3.10+ | تشغيل السكربت | [python.org](https://www.python.org/downloads/) |
-| faster-whisper | النسخ الصوتي | `pip install faster-whisper` |
-| gst-translator | الترجمة عبر Gemini | `pip install gemini-srt-translator` |
-| FFmpeg | دمج الترجمة داخل الفيديو | [ffmpeg.org](https://ffmpeg.org/download.html) |
-| Gemini API Key | تشغيل الترجمة | [aistudio.google.com](https://aistudio.google.com/app/apikey) (مجاني) |
-
-لازم يكون FFmpeg مضاف إلى PATH في جهازك. وجود GPU أفضل، لكن السكربت يرجع تلقائياً إلى CPU إذا ما كان متوفر.
+- 📦 **Monolithic Single File**: The entire application is self-contained in a single, refined `.py` file for minimal setup and maximum portability.
+- 🎙️ **Local High-Performance Transcription**: Driven by `faster-whisper` (utilizing CTranslate2), offering faster execution times than standard Whisper implementations.
+- 🌐 **Structural SRT Translation**: Leverages the fast, affordable `gemini-3.5-flash` model for high-context natural subtitle translation.
+- ⏱️ **Structural Alignment Engine**: A strict ratio-based alignment system maps translated dialogue directly onto source templates. It preserves the sequence numbers and millisecond timestamps of the original transcription, neutralizing model layout formatting anomalies.
+- 🛡️ **Interactive Profile Fast-Path**: Returning users can bypass setup prompts with a single keypress, loading custom settings instantly.
+- 📺 **Softsub or Hardsub Muxing**: Automatically embeds generated subtitles into MKV containers as native, selectable text tracks (softsubs) or burns them directly into MP4 containers (hardsubs).
+- 🧹 **Robust Cleanup and Sweeping**: Tracks temp files and cleans up directories on crash recovery, keeping the workspace tidy.
+- 🔄 **Watch Mode**: Monitors a directory continuously, processing compatible media files as soon as they appear.
 
 ---
 
-### ⚠️ قبل ما تشغّل السكربت
+## 🛠️ Requirements & Prerequisites
 
-> [!IMPORTANT]
-> حط **pipeline.py** و **pipeline.bat** في **نفس مجلد الفيديوهات** قبل ما تشغّل أي شيء. السكربت يعالج فقط الفيديوهات الموجودة في نفس مكانه
+To run this pipeline from source, you will need:
+
+1. **Python 3.8 to 3.11** (Note: `faster-whisper` might experience library compatibility issues on newer Python releases like 3.12+ depending on system platform bindings).
+2. **FFmpeg & FFprobe**: 
+   - **Windows**: The script will automatically attempt to download standalone binaries locally on first run if they are not in your system environment path.
+   - **macOS / Linux**: Install via package manager:
+     ```bash
+     # Ubuntu/Debian
+     sudo apt install ffmpeg
+     
+     # macOS (Homebrew)
+     brew install ffmpeg
+     ```
+3. **Gemini API Key** (Required for Translation only):
+   - Obtain an API key from [Google AI Studio](https://aistudio.google.com/).
 
 ---
 
-### 🌐 افتح الدليل التفاعلي
+## 🚀 Quick Setup & Installation
 
-الدليل الكامل للإعداد (عربي/إنجليزي، خطوة بخطوة) موجود هنا:
+### Option A: Running from Source
 
-🔗 [(https://bmq-1.github.io/Subs-pipeline/)] ←
-
-فيه كل خطوات التثبيت، إعداد مفتاح الـ API، وحلول أكثر المشاكل الشائعة.
+1. Clone this repository:
+   ```bash
+   git clone https://github.com/BMQ-1/subs-pipeline.git
+   cd subs-pipeline

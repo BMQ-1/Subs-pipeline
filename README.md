@@ -1,71 +1,123 @@
+---
+
 # 🎬 Subs-pipeline
 
-An intelligent, single-file media transcription, structural translation, and muxing pipeline. This application automates the process of generating accurate, multi-language subtitles locally using `faster-whisper` and translating them through the Google Gemini API, while ensuring timestamps remain synchronized.
+An intelligent, monolithic media transcription, structural translation, and muxing pipeline. This application automates the generation of synchronized, multi-language subtitles locally using `faster-whisper` and translates them via the **Google Gemini 3.5 Flash** API.
 
 ---
 
-## ✨ Features
+## ⚖️ Disclaimer
 
-- 📦 **Monolithic Single File**: The entire application is self-contained in a single, refined `.py` file for minimal setup and maximum portability.
-- 🎙️ **Local High-Performance Transcription**: Driven by `faster-whisper` (utilizing CTranslate2), offering faster execution times than standard Whisper implementations.
-- 🌐 **Structural SRT Translation**: Leverages the fast, affordable `gemini-3.5-flash` model for high-context natural subtitle translation.
-- ⏱️ **Structural Alignment Engine**: A strict ratio-based alignment system maps translated dialogue directly onto source templates. It preserves the sequence numbers and millisecond timestamps of the original transcription, neutralizing model layout formatting anomalies.
-- 🛡️ **Interactive Profile Fast-Path**: Returning users can bypass setup prompts with a single keypress, loading custom settings instantly.
-- 📺 **Softsub or Hardsub Muxing**: Automatically embeds generated subtitles into MKV containers as native, selectable text tracks (softsubs) or burns them directly into MP4 containers (hardsubs).
-- 🧹 **Robust Cleanup and Sweeping**: Tracks temp files and cleans up directories on crash recovery, keeping the workspace tidy.
-- 🔄 **Watch Mode**: Monitors a directory continuously, processing compatible media files as soon as they appear.
-
----
-
-## 🛠️ Requirements & Prerequisites
-
-To run this pipeline from source, you will need:
-
-1. **Python 3.8 to 3.11** (Note: `faster-whisper` might experience library compatibility issues on newer Python releases like 3.12+ depending on system platform bindings).
-2. **FFmpeg & FFprobe**: 
-   - **Windows**: The script will automatically attempt to download standalone binaries locally on first run if they are not in your system environment path.
-   - **macOS / Linux**: Install via package manager:
-     ```bash
-     # Ubuntu/Debian
-     sudo apt install ffmpeg
-     
-     # macOS (Homebrew)
-     brew install ffmpeg
-     ```
-3. **Gemini API Key** (Required for Translation only):
-   - Obtain an API key from [Google AI Studio](https://aistudio.google.com/).
+> [!IMPORTANT]
+> **Hello everyone. Firstly i want to say that this entire repo was done by an AI - the Python, Readme, LICENSE and everything as a whole, i was only a supervisor even tho i know nothing about coding myself.**
+> 
+> 3 months ago i learned about yt-dlp and it was like i discovered something i've always wished for ( a tool to download videos from many major sites ESPECIALLY Youtube ).
+> 
+> Then less than a week ago from now i found Ani-Cli and i got a burst of passion like i never had, i could download animes in SECONDS and watch them with no lag or stutter - it was an insane experience.
+> 
+> BUT i ran into an issue. I speak Arabic - Animes are in Japanese and the Subtitles are mostly in English ( Which i speak but not my native language ) SO i started asking AI for ways to to be able to find a solutiom ---- i already had Whisper from months ago for something i forgot -> then learned about gemini Translation -> then about remuxing the Arabic subtitles i got. Each was a .py with a .bat file of the same name to run it.
+> 
+> Then the pipeline idea was born ( By the help of AI again ) - it was one file that transcribes Anything -> Translates it to anything. that means i found a gold mine, so why not share it to the public ? 
+> 
+> Hope i and the AI did good with this tool and whole Repo - If not then feel free to either copy the .py file and modify it for yourself or ask me to do some improvments which i HOPE i will try. Thanks.
+> 
+> **⚠️ DISCLAIMER** The code is visible for you all, You do NOT need to install the .exe as it might make some peopel on edge.
+> 
+> you can follow what the Ai said about cloning the repository - so either do so -
+> 
+> OR copy my .py -> put it in an AI to verify it is safe -> make a python file in the same folder you have the vid you need to work on -> add a .bat next to it ( Ask AI what to put so the .bat makes the .py work in two click -- it is no more than 3 lines to work fine ). 
+> 
+> NOW you have the tool FOREVOR.
 
 ---
 
-## 🚀 Quick Setup & Installation
+**And finally my intention is to share the tiny bit of knowledge that i got and the tool that i came up with by the help of AI to help anyone who would reach my code. Hope you guys could build on it, learn from it, have fun with it same way i was having lots of fun and trying things i thought were impossible to do, let alone do it with no cost and with TWO clicks, Insane. And Thanks again.**
 
-### Option A: Running from Source
+---
 
-1. Clone this repository:
+## ✨ Key Features
+
+- 📦 **Monolithic Build**: The entire logic is contained within a single `subs-pipeline.py` file.
+- 🎙️ **High-Speed Transcription**: Powered by `faster-whisper` for local, GPU-accelerated (or CPU optimized) audio-to-text.
+- 🌐 **AI Translation**: Utilizes the latest `gemini-3.5-flash` model for context-aware natural language translation.
+- ⏱️ **Timestamp Integrity**: Features a structural alignment engine that ensures translated text never drifts from the original audio timing.
+- 🛡️ **Fast-Path Memory**: Remembers your settings. If you run the tool on the same folder twice, you can bypass the setup wizard with one keypress.
+- 🧹 **Automatic Cleanup**: Self-cleaning temp files. It even sweeps for "orphaned" files left behind by previous crashes on startup.
+- 🔄 **Watch Mode**: Can sit in the background and automatically process any new video files added to a folder.
+
+---
+
+## 🛠️ Prerequisites
+
+1. **Python 3.8 - 3.11**: (3.10 is recommended for the best library stability).
+2. **FFmpeg**: 
+   - **Windows**: If not found, the tool will offer to download standalone binaries for you automatically.
+   - **Linux/macOS**: `sudo apt install ffmpeg` or `brew install ffmpeg`.
+3. **Gemini API Key**: Get one for free at [Google AI Studio](https://aistudio.google.com/).
+
+---
+
+## 🚀 Installation & Setup
+
+### Running from Source
+1. Clone your repository.
+2. Install the required libraries:
    ```bash
-   git clone https://github.com/BMQ-1/subs-pipeline.git
-   cd subs-pipeline
+   pip install faster-whisper watchdog pyinstaller
+   ```
+3. Run the script:
+   ```bash
+   python subs-pipeline.py
+   ```
+
+### Creating a Standalone `.exe` (Windows)
+To turn the script into a single file you can carry on a USB drive or share with others:
+1. Open your terminal in the script folder.
+2. Run this command:
+   ```bash
+   pyinstaller --onefile --clean --name=Subs-pipeline subs-pipeline.py
+   ```
+3. Your executable will be in the `dist/` folder named `Subs-pipeline.exe`.
 
 ---
 
-1. Create a virtual environment and activate it:
+## 📖 Usage Guide
 
-python -m venv venv
+### 1. Interactive Wizard (Beginner Friendly) 🧙‍♂️
+Just run the tool. It will ask you step-by-step for your folder path, target language, and API key. It detects your hardware and **recommends** the best Whisper model for your specific computer.
 
-# Windows activation:
-venv\Scripts\activate
-# macOS/Linux activation:
-source venv/bin/activate
-
-
-2. Install the dependencies:
-
-pip install -r requirements.txt
-
-
-3. Run the application:
-
-python subs-pipeline.py
+### 2. Headless CLI (Advanced/Automated) 🤖
+For use in scripts or server environments:
+```bash
+subs-pipeline.exe --headless --folder "C:\Movies" --api_key "KEY" --tgt_lang "Arabic" --tgt_ext "ar" --model "medium"
+```
 
 ---
 
+## 📊 Status Transparency (What do the results mean?)
+
+The summary table at the end uses specific codes so you know exactly how reliable the output is:
+
+| Label | Meaning |
+| :--- | :--- |
+| **`[DONE_TRN]`** | **Perfect Success**: Transcription and Translation were both created fresh and muxed. |
+| **`[DONE_MIX]`** | **Partial Success**: The translation finished, but some specific lines had to stay in the original language to prevent timing errors. |
+| **`[DONE_MUX]`** | **Cached Success**: We found a translation you made previously and just muxed it into a new video for you. |
+| **`[REUSED  ]`** | **No Action**: The final video file already exists. We didn't waste your API quota or time. |
+| **`[SKIPPED ]`** | **Quality Control**: The audio was too quiet or the AI started "hallucinating" (looping), so we stopped to save your file from being ruined. |
+| **`[FAULT   ]`** | **Error**: Something went wrong (e.g., Internet cut out or file permissions denied). |
+
+---
+
+## ⚙️ Advanced CLI Options
+
+| Argument | Description | Default |
+| :--- | :--- | :--- |
+| `--min_blocks` | How many subtitle lines are needed to consider a file "valid". Prevents outputting empty files. | `3` |
+| `--hardsub` | Instead of a toggleable track, burn the text permanently into the video pixels. | `False` |
+| `--no_cleanup` | Stop the tool from deleting old `temp_` files on startup. | `False` |
+| `--src_lang` | Force a source language (e.g., `ja` for Japanese) instead of auto-detecting. | `None` |
+| `--watch` | Turn on folder monitoring mode. | `False` |
+
+---
+*Built with transparency and accuracy in mind.*

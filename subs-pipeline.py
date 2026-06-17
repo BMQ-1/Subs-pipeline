@@ -109,7 +109,7 @@ GEMINI_URL_TEMPLATE = (
     "https://generativelanguage.googleapis.com/v1beta/models/"
     "{model}:generateContent?key={key}"
 )
-API_KEY_PATTERN = re.compile(r"^[A-Za-z0-9_\-]{20,}\b")
+API_KEY_PATTERN = re.compile(r"^[A-Za-z0-9_\-]{20,}$")
 
 # VRAM Requirements (in GB)
 VRAM_REQUIREMENTS: Dict[str, float] = {

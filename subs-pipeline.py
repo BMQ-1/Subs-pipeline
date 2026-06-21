@@ -131,7 +131,7 @@ def enable_windows_ansi() -> None:
 # ════════════════════════════════════════════════════════════
 #  MODULE METADATA
 # ════════════════════════════════════════════════════════════
-__version__ = "1.3"
+__version__ = "1.4"
 __author__ = "Subs Pipeline Team"
 
 # ════════════════════════════════════════════════════════════
@@ -1065,10 +1065,17 @@ def validate_schema(cfg_dict: Dict[str, Any]) -> Dict[str, Any]:
 
             if key in range_rules:
                 min_val, max_val, fallback = range_rules[key]
-                if cfg_dict[key] < min_val or cfg_dict[key] > max_val:
+                try:
+                    if cfg_dict[key] < min_val or cfg_dict[key] > max_val:
+                        qprint(
+                            f"  {style('[!]', C.YELLOW)} Config key '{key}' out of range "
+                            f"[{min_val} - {max_val}]. Resetting to default '{fallback}'."
+                        )
+                        cfg_dict[key] = fallback
+                except TypeError:
                     qprint(
-                        f"  {style('[!]', C.YELLOW)} Config key '{key}' out of range "
-                        f"[{min_val} - {max_val}]. Resetting to default '{fallback}'."
+                        f"  {style('[!]', C.YELLOW)} Config key '{key}' has invalid type compatibility. "
+                        f"Resetting to default '{fallback}'."
                     )
                     cfg_dict[key] = fallback
         else:
@@ -1179,10 +1186,12 @@ def escape_ffmpeg_filter_path(path: Union[str, Path]) -> str:
     return f"'{p_str}'"
 
 
-def natural_keys(text: Union[str, Path]) -> List[Union[int, str]]:
-    """Split text into natural sort key components (numbers as int, text lowercase)."""
+def natural_keys(text: Union[str, Path]) -> List[Tuple[int, Union[int, str]]]:
+    """Split text into natural sort key components (numbers sorted as numbers, text lowercase)
+    safely avoiding cross-type comparison errors.
+    """
     return [
-        int(c) if c.isdigit() else c.lower()
+        (0, int(c)) if c.isdigit() else (1, c.lower())
         for c in re.split(r"(\d+)", str(text))
         if c
     ]
@@ -3813,6 +3822,15 @@ def run_self_tests() -> bool:
         else:
             print(f"  {C.RED}[FAIL]{C.RESET} Source SRT localization with path character classes (Got: {found_srt}, lang: {srt_lang})")
             failed += 1
+
+    # Test natural_keys mixed type comparisons
+    try:
+        test_list = ["file123", "123file", "file2"]
+        test_list.sort(key=natural_keys)
+        print(f"  {C.GREEN}[PASS]{C.RESET} Natural keys mixed sorting logic")
+    except TypeError as e:
+        print(f"  {C.RED}[FAIL]{C.RESET} Natural keys mixed sorting logic (Error: {e})")
+        failed += 1
         
     print(f"{C.CYAN}───────────────────────────────────────────────────────────{C.RESET}")
     if failed == 0:

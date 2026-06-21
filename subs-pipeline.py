@@ -118,7 +118,7 @@ def enable_windows_ansi() -> None:
 # ════════════════════════════════════════════════════════════
 #  MODULE METADATA
 # ════════════════════════════════════════════════════════════
-__version__ = "1.2"
+__version__ = "1.3"
 __author__ = "Subs Pipeline Team"
 
 # ════════════════════════════════════════════════════════════
@@ -156,7 +156,7 @@ GEMINI_URL_TEMPLATE = (
     "https://generativelanguage.googleapis.com/v1beta/models/"
     "{model}:generateContent?key={key}"
 )
-API_KEY_PATTERN = re.compile(r"^[A-Za-z0-9_.+/\-]{10,120}$")
+API_KEY_PATTERN = re.compile(r"^[A-Za-z0-9_.+/\-=@#$!%^&*()]{10,120}$")
 
 # VRAM Requirements (in GB)
 VRAM_REQUIREMENTS: Dict[str, float] = {
@@ -186,7 +186,7 @@ MUXED_MIN_BYTES: int = 1000
 FILE_SETTLE_MAX_RETRIES: int = 6
 FILE_SETTLE_DELAY: float = 1.5
 WHISPER_BEAM_SIZE: int = 5
-WHISPER_TRANSCRIBE_TIMEOUT: int = 3600  # 1 hour max for transcription
+WHISPER_TRANSCRIBE_TIMEOUT: int = 10800  # Dynamic protection bump to 3 hours maximum for transcription
 
 # Audio extraction settings
 AUDIO_SAMPLE_RATE: int = 16000
@@ -311,7 +311,7 @@ class Context:
     quiet: bool = False
     ffmpeg_cmd: Optional[str] = None
     ffprobe_cmd: Optional[str] = None
-    translation_disabled: bool = False
+    _translation_disabled: bool = False
     _consecutive_429s: int = 0
     _consecutive_total_failures: int = 0
     _state_lock: threading.Lock = threading.Lock()
@@ -321,6 +321,24 @@ class Context:
     failed_cleanups: List[str] = []
     migration_status: str = "none"
     provenance: Dict[str, str] = {}
+
+    @classmethod
+    def is_translation_disabled(cls) -> bool:
+        """Get thread-safe translation disabled status."""
+        with cls._state_lock:
+            return cls._translation_disabled
+
+    @classmethod
+    def set_translation_disabled(cls, val: bool) -> None:
+        """Set thread-safe translation disabled status."""
+        with cls._state_lock:
+            cls._translation_disabled = val
+
+    @classmethod
+    def add_failed_cleanup(cls, msg: str) -> None:
+        """Add clean up error message safely."""
+        with cls._state_lock:
+            cls.failed_cleanups.append(msg)
 
     @classmethod
     def get_consecutive_429s(cls) -> int:
@@ -364,7 +382,7 @@ class Context:
         with cls._state_lock:
             cls._consecutive_429s = 0
             cls._consecutive_total_failures = 0
-            cls.translation_disabled = False
+            cls._translation_disabled = False
 
     @classmethod
     def clear_mutable_states(cls) -> None:
@@ -382,7 +400,7 @@ class Context:
             cls.quiet = False
             cls.ffmpeg_cmd = None
             cls.ffprobe_cmd = None
-            cls.translation_disabled = False
+            cls._translation_disabled = False
             cls._consecutive_429s = 0
             cls._consecutive_total_failures = 0
             cls.config_warning = ""
@@ -563,6 +581,7 @@ class TranscriptionManager:
     _req_queue: Optional[multiprocessing.Queue] = None
     _res_queue: Optional[multiprocessing.Queue] = None
     _lock: threading.RLock = threading.RLock()
+    _transcribe_mutex: threading.Lock = threading.Lock()
     _is_running: bool = False
     _current_model: Optional[Tuple[str, str, str]] = None
 
@@ -601,75 +620,76 @@ class TranscriptionManager:
         beam_size: int,
         timeout: float,
     ) -> Generator[Tuple[str, Any], None, None]:
-        """Transcribe audio using the persistent process, freeing VRAM on timeout."""
-        with cls._lock:
-            if cls._is_running:
-                raise RuntimeError("Another transcription is currently in progress.")
-            cls._is_running = True
-
-            target_model = (model_name, device, compute_type)
-            if (
-                cls._process is None
-                or not cls._process.is_alive()
-                or cls._current_model != target_model
-            ):
-                if cls._process and cls._process.is_alive():
-                    cls.terminate_with_lock()
-                
-                logger.debug("Spawning child transcription worker using model: %s", model_name)
-                cls._start_process(model_name, device, compute_type)
-                cls._current_model = target_model
-
-                init_timeout = False
-                msg_type, payload = None, None
-                try:
-                    msg_type, payload = cls._res_queue.get(timeout=45.0)
-                except queue.Empty:
-                    init_timeout = True
-
-                if init_timeout:
-                    cls.terminate_with_lock()
-                    cls._is_running = False
-                    raise RuntimeError("Failed to communicate with transcription worker (initialization timeout).")
-                elif msg_type == "init_error":
-                    cls.terminate_with_lock()
-                    cls._is_running = False
-                    raise RuntimeError(f"Transcription worker initialization failed: {payload}")
-                elif msg_type != "init_ok":
-                    cls.terminate_with_lock()
-                    cls._is_running = False
-                    raise RuntimeError(f"Unexpected response from transcription worker initialization: {msg_type}")
-
-            cls._drain_queue(cls._res_queue)
-            cls._req_queue.put((audio_path, lang_hint, beam_size))
-
-        deadline = time.monotonic() + timeout
-        try:
-            while True:
-                rem = deadline - time.monotonic()
-                if rem <= 0:
-                    cls.terminate()
-                    raise TimeoutError(f"Transcription timed out after {timeout} seconds")
-
-                try:
-                    msg_type, data = cls._res_queue.get(timeout=min(rem, 1.0))
-                    if msg_type == "info":
-                        yield ("info", data)
-                    elif msg_type == "segment":
-                        yield ("segment", data)
-                    elif msg_type == "done":
-                        break
-                    elif msg_type == "error":
-                        raise RuntimeError(data)
-                except queue.Empty:
-                    with cls._lock:
-                        if cls._process is not None and not cls._process.is_alive():
-                            raise RuntimeError("Transcription worker process terminated unexpectedly")
-                    continue
-        finally:
+        """Transcribe audio using the persistent process, serialization locks handle concurrency."""
+        with cls._transcribe_mutex:
             with cls._lock:
-                cls._is_running = False
-            perform_vram_gc()
+                if cls._is_running:
+                    raise RuntimeError("Another transcription is currently in progress.")
+                cls._is_running = True
+
+                target_model = (model_name, device, compute_type)
+                if (
+                    cls._process is None
+                    or not cls._process.is_alive()
+                    or cls._current_model != target_model
+                ):
+                    if cls._process and cls._process.is_alive():
+                        cls.terminate_with_lock()
+                    
+                    logger.debug("Spawning child transcription worker using model: %s", model_name)
+                    cls._start_process(model_name, device, compute_type)
+                    cls._current_model = target_model
+
+                    init_timeout = False
+                    msg_type, payload = None, None
+                    try:
+                        msg_type, payload = cls._res_queue.get(timeout=45.0)
+                    except queue.Empty:
+                        init_timeout = True
+
+                    if init_timeout:
+                        cls.terminate_with_lock()
+                        cls._is_running = False
+                        raise RuntimeError("Failed to communicate with transcription worker (initialization timeout).")
+                    elif msg_type == "init_error":
+                        cls.terminate_with_lock()
+                        cls._is_running = False
+                        raise RuntimeError(f"Transcription worker initialization failed: {payload}")
+                    elif msg_type != "init_ok":
+                        cls.terminate_with_lock()
+                        cls._is_running = False
+                        raise RuntimeError(f"Unexpected response from transcription worker initialization: {msg_type}")
+
+                cls._drain_queue(cls._res_queue)
+                cls._req_queue.put((audio_path, lang_hint, beam_size))
+
+            deadline = time.monotonic() + timeout
+            try:
+                while True:
+                    rem = deadline - time.monotonic()
+                    if rem <= 0:
+                        cls.terminate()
+                        raise TimeoutError(f"Transcription timed out after {timeout} seconds")
+
+                    try:
+                        msg_type, data = cls._res_queue.get(timeout=min(rem, 1.0))
+                        if msg_type == "info":
+                            yield ("info", data)
+                        elif msg_type == "segment":
+                            yield ("segment", data)
+                        elif msg_type == "done":
+                            break
+                        elif msg_type == "error":
+                            raise RuntimeError(data)
+                    except queue.Empty:
+                        with cls._lock:
+                            if cls._process is not None and not cls._process.is_alive():
+                                raise RuntimeError("Transcription worker process terminated unexpectedly")
+                        continue
+            finally:
+                with cls._lock:
+                    cls._is_running = False
+                perform_vram_gc()
 
     @classmethod
     def terminate(cls) -> None:
@@ -737,7 +757,7 @@ def safe_remove(path: Union[str, Path]) -> None:
         if p.exists():
             p.unlink(missing_ok=True)
     except OSError as e:
-        Context.failed_cleanups.append(f"{path} ({e.strerror or str(e)})")
+        Context.add_failed_cleanup(f"{path} ({e.strerror or str(e)})")
     finally:
         unregister_temp_file(p)
 
@@ -928,7 +948,7 @@ def validate_schema(cfg_dict: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def load_config() -> Dict[str, Any]:
-    """Load configuration from disk with decryption of obfuscated API keys."""
+    """Load configuration with reversible base64 obfuscation used to prevent plaintext exposure in settings."""
     logger.debug("Loading configuration parameters from: %s", CONFIG_PATH)
     if CONFIG_PATH.exists():
         Context.migration_status = "loaded"
@@ -955,7 +975,7 @@ def load_config() -> Dict[str, Any]:
 
 
 def save_config(conf: Dict[str, Any]) -> None:
-    """Save configuration atomically with API key base64 obfuscation and thread safety."""
+    """Save configuration atomically with basic base64 obfuscation to prevent direct exposure of credential keys."""
     with _config_save_lock:
         parent_dir = CONFIG_PATH.parent
         parent_dir.mkdir(parents=True, exist_ok=True)
@@ -1295,7 +1315,7 @@ def is_valid_srt(
 #  API KEY VALIDATION
 # ════════════════════════════════════════════════════════════
 def validate_api_key(key: str) -> Tuple[bool, str]:
-    """Validate a general API key format."""
+    """Validate general key structure, permitting standard API credential symbols."""
     if not key or not key.strip():
         return False, "API key is empty"
     if len(key) < 10:
@@ -1323,6 +1343,15 @@ def validate_tgt_ext(ext: str) -> Tuple[bool, str]:
 def validate_args(args: argparse.Namespace) -> None:
     """Resolve configuration conflicts and apply automatic overrides."""
     adjustments: List[str] = []
+    
+    if args.translator:
+        args.translator = args.translator.lower().strip()
+        supported = {"gemini", "openai", "anthropic", "deepl", "google"}
+        if args.translator not in supported:
+            adjustments.append(f"Invalid translator '{args.translator}' detected. Resetting to default 'gemini'.")
+            args.translator = "gemini"
+            Context.provenance["translator"] = "Auto-Override"
+
     if args.hardsub and not args.embed:
         adjustments.append(
             "Hardsub is enabled but Muxing is disabled. "
@@ -1542,9 +1571,13 @@ def print_summary(
     total_elapsed: float,
     args: argparse.Namespace,
 ) -> None:
-    """Print a formatted batch completion summary table."""
+    """Print a formatted batch completion summary table with aligned headers."""
     W = 72
-    top = BOX_TL + BOX_HL * (W // 2 - 5) + " BATCH REPORT " + BOX_HL * (W // 2 - 5) + BOX_TR
+    title_text = " BATCH REPORT "
+    rem = W - len(title_text)
+    left_dashes = rem // 2
+    right_dashes = rem - left_dashes
+    top = BOX_TL + BOX_HL * left_dashes + title_text + BOX_HL * right_dashes + BOX_TR
     mid = BOX_ML + BOX_HL * W + BOX_MR
     bot = BOX_BL + BOX_HL * W + BOX_BR
 
@@ -1682,11 +1715,14 @@ def run_watcher(args: argparse.Namespace) -> None:
             resolved = Path(path).resolve()
             if not str(resolved).lower().endswith(MEDIA_EXTS):
                 return False
+            # Check for local processing temp files explicitly to prevent infinite feedback loops
+            if resolved.name.startswith("temp_"):
+                return False
             if not is_safe_relative(resolved, folder_root):
                 return False
             try:
                 rel = resolved.relative_to(folder_root)
-                if rel.parts and rel.parts[0] == muxed_folder:
+                if rel.parts and any(p.startswith("muxed_") for p in rel.parts):
                     return False
             except ValueError:
                 return False
@@ -1828,6 +1864,11 @@ def _execute_translator_request(
     tgt_ext: str,
 ) -> Union[str, Dict[int, str]]:
     """Execute raw HTTP request targeting the selected translation provider with fallbacks."""
+    translator = translator.lower().strip()
+    supported_translators = {"gemini", "openai", "anthropic", "deepl", "google"}
+    if translator not in supported_translators:
+        raise ValueError(f"Unsupported translator provider choice: {translator}")
+
     if not global_rate_limiter.acquire(timeout=30):
         raise RuntimeError("API request blocked: Rate limiter token acquisition timeout.")
 
@@ -1851,6 +1892,8 @@ def _execute_translator_request(
         }
         method = "POST"
         payload_dict: Dict[str, Any] = {}
+        req_url = ""
+        payload = b""
 
         if translator == "gemini":
             req_url = url if url else GEMINI_URL_TEMPLATE.format(model=model, key=api_key)
@@ -1910,6 +1953,7 @@ def _execute_translator_request(
             payload = json.dumps(payload_dict).encode("utf-8")
 
         elif translator == "google":
+            logger.warning("Using unofficial Google Translate endpoint. This free API key-less endpoint can change or be restricted without notice.")
             req_url = url if url else f"https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl={tgt_ext}&dt=t"
             joined_text = "\n###\n".join(prompt_or_list)
             payload_dict = {"q": joined_text}
@@ -1993,7 +2037,7 @@ def _execute_translator_request(
             if e.code == 429:
                 Context.increment_consecutive_429s()
                 if Context.get_consecutive_429s() >= CONSECUTIVE_429_LIMIT:
-                    Context.translation_disabled = True
+                    Context.set_translation_disabled(True)
                     raise RuntimeError("Rate limits (429) hit consecutively. Suspending API translation.")
                 time.sleep(5 * attempt + 5)
             elif e.code == 503:
@@ -2031,23 +2075,35 @@ def _execute_translator_request(
 
 
 def _parse_translation_response(response_text: str) -> Dict[int, str]:
-    """Parse output text back into structured layout components mapping IDs to text."""
+    """Parse output text back into structured layout components mapping IDs to text with regex boundary isolation."""
     parsed_translations: Dict[int, str] = {}
     if response_text.strip():
-        # Clean separator split allowing flexible non-conforming responses from LLMs
-        for part in re.split(r"Block\s*(?:#|No\s*|\s)\s*", response_text, flags=re.IGNORECASE):
-            part = part.strip()
-            if not part:
-                continue
-            lines = part.splitlines()
-            header = lines[0] if lines else ""
-            m = re.match(r"^(\d+):?", header)
-            if m:
-                b_num = int(m.group(1))
-                body = "\n".join(lines[1:]) if len(lines) > 1 else ""
-                if body.startswith(":"):
-                    body = body[1:].strip()
-                parsed_translations[b_num] = body.strip()
+        # Match "Block #ID:" or similar specific pattern cleanly, preventing split errors on text matching "Block"
+        parts = re.split(r"Block\s*(?:#|No\s*|\s)\s*(\d+)\s*:?", response_text, flags=re.IGNORECASE)
+        
+        if len(parts) >= 3:
+            for idx in range(1, len(parts), 2):
+                try:
+                    b_num = int(parts[idx])
+                    body = parts[idx + 1].strip() if idx + 1 < len(parts) else ""
+                    parsed_translations[b_num] = body
+                except ValueError:
+                    pass
+        else:
+            # Fallback to lines parsing if the regex split pattern did not match correctly
+            for part in re.split(r"Block\s*(?:#|No\s*|\s)\s*", response_text, flags=re.IGNORECASE):
+                part = part.strip()
+                if not part:
+                    continue
+                lines = part.splitlines()
+                header = lines[0] if lines else ""
+                m = re.match(r"^(\d+):?", header)
+                if m:
+                    b_num = int(m.group(1))
+                    body = "\n".join(lines[1:]) if len(lines) > 1 else ""
+                    if body.startswith(":"):
+                        body = body[1:].strip()
+                    parsed_translations[b_num] = body.strip()
     return parsed_translations
 
 
@@ -2281,7 +2337,7 @@ def interactive_wizard(
                     else:
                         qprint(f"  {C.YELLOW}[!] Ignored invalid credentials environment variable.{C.RESET}")
                 
-            args.translate = bool(args.api_key) or args.translator == "google"
+            args.translate = (bool(args.api_key) or args.translator == "google") and not getattr(args, "skip_translate", False)
             args.min_blocks = int(cfg_memory.get("min_blocks", 3))
 
             saved_model = cfg_memory.get("model")
@@ -2524,28 +2580,28 @@ def interactive_wizard(
                     f"    Max block duration seconds "
                     f"[{getattr(args, 'srt_max_avg_duration', cfg_memory.get('srt_max_avg_duration', 10.0))}]: "
                 ).strip()
-                or getattr(args, "srt_max_avg_duration", cfg_memory.get("srt_max_avg_duration", 10.0))
+                or getattr(args, 'srt_max_avg_duration', cfg_memory.get('srt_max_avg_duration', 10.0))
             )
             args.srt_min_avg_duration = float(
                 input(
                     f"    Min block duration seconds "
                     f"[{getattr(args, 'srt_min_avg_duration', cfg_memory.get('srt_min_avg_duration', 0.1))}]: "
                 ).strip()
-                or getattr(args, "srt_min_avg_duration", cfg_memory.get("srt_min_avg_duration", 0.1))
+                or getattr(args, 'srt_min_avg_duration', cfg_memory.get('srt_min_avg_duration', 0.1))
             )
             args.srt_dup_ratio = float(
                 input(
                     f"    Duplicate loop ratio threshold "
                     f"[{getattr(args, 'srt_dup_ratio', cfg_memory.get('srt_dup_ratio', 0.6))}]: "
                 ).strip()
-                or getattr(args, "srt_dup_ratio", cfg_memory.get("srt_dup_ratio", 0.6))
+                or getattr(args, 'srt_dup_ratio', cfg_memory.get('srt_dup_ratio', 0.6))
             )
             args.fallback_match_threshold = float(
                 input(
                     f"    Fuzzy match ratio (0.0 - 1.0) "
                     f"[{getattr(args, 'fallback_match_threshold', cfg_memory.get('fallback_match_threshold', 0.95))}]: "
                 ).strip()
-                or getattr(args, "fallback_match_threshold", cfg_memory.get("fallback_match_threshold", 0.95))
+                or getattr(args, 'fallback_match_threshold', cfg_memory.get('fallback_match_threshold', 0.95))
             )
             for k in [
                 "srt_max_avg_duration",
@@ -2565,14 +2621,28 @@ def interactive_wizard(
         args.srt_dup_ratio = getattr(args, "srt_dup_ratio", cfg_memory.get("srt_dup_ratio", 0.6))
         args.fallback_match_threshold = getattr(args, "fallback_match_threshold", cfg_memory.get("fallback_match_threshold", 0.95))
 
-    # Step 11: Pipeline Steps
+    # Step 11: Pipeline Steps (Interactive Wizard respects CLI skip flags)
     print(f"\n{C.BOLD}> Step 11: Pipeline Steps{C.RESET}")
-    args.transcribe = input("  Transcribe? [Y/n]: ").strip().lower() != "n"
+    if getattr(args, "skip_transcribe", False):
+        args.transcribe = False
+        print("  Transcribe? [Disabled via CLI]")
+    else:
+        args.transcribe = input("  Transcribe? [Y/n]: ").strip().lower() != "n"
     Context.provenance["transcribe"] = "Interactive"
+    
     if args.translate:
-        args.translate = input("  Translate?  [Y/n]: ").strip().lower() != "n"
-        Context.provenance["translate"] = "Interactive"
-    args.embed = input("  Mux?        [Y/n]: ").strip().lower() != "n"
+        if getattr(args, "skip_translate", False):
+            args.translate = False
+            print("  Translate?  [Disabled via CLI]")
+        else:
+            args.translate = input("  Translate?  [Y/n]: ").strip().lower() != "n"
+            Context.provenance["translate"] = "Interactive"
+            
+    if getattr(args, "skip_embed", False):
+        args.embed = False
+        print("  Mux?        [Disabled via CLI]")
+    else:
+        args.embed = input("  Mux?        [Y/n]: ").strip().lower() != "n"
     Context.provenance["embed"] = "Interactive"
 
     if args.hardsub and not args.embed:
@@ -2874,15 +2944,20 @@ def _transcribe_audio(
 
 
 def find_source_srt(media_p: Path, tgt_ext: str, src_lang: Optional[str] = None) -> Tuple[Path, str]:
-    """Locate an existing language-specific source subtitle file."""
+    """Locate an existing language-specific source subtitle file without glob injection."""
     base = media_p.stem
     if src_lang:
         return media_p.parent / f"{base}.{src_lang}.srt", src_lang
 
-    for p in media_p.parent.glob(f"{base}.*.srt"):
-        ext = p.name[len(base) + 1:-4]
-        if ext != tgt_ext and ext != "subs-pipeline" and validate_tgt_ext(ext)[0]:
-            return p, ext
+    try:
+        # Match base names programmatically to prevent character bracket injection bugs
+        for p in media_p.parent.iterdir():
+            if p.is_file() and p.name.startswith(f"{base}.") and p.name.endswith(".srt"):
+                ext = p.name[len(base) + 1:-4]
+                if ext != tgt_ext and ext != "subs-pipeline" and validate_tgt_ext(ext)[0]:
+                    return p, ext
+    except OSError:
+        pass
 
     legacy = media_p.parent / f"{base}.subs-pipeline.srt"
     if legacy.exists():
@@ -2900,7 +2975,7 @@ def process_file(
     file_index: int = 1,
     total_files: int = 1,
 ) -> Tuple[Dict[str, Any], float]:
-    """Process a single media file through the full pipeline."""
+    """Process a single media file through the full pipeline with container validations."""
     media_p = Path(media_path)
     base = media_p.stem
     t_start = time.time()
@@ -2986,15 +3061,25 @@ def process_file(
     if args.translate:
         target_dir = media_p.parent / f"muxed_{args.tgt_ext}"
         candidate = target_dir / f"{base}.{out_ext}"
-        if candidate.exists() and candidate.stat().st_size >= MUXED_MIN_BYTES:
-            existing_out_path = candidate
+        if candidate.exists():
+            ok, _ = verify_mux_output(candidate, hardsub=args.hardsub)
+            if ok:
+                existing_out_path = candidate
+            else:
+                qprint(f"  {C.YELLOW}[!] Existing container output failed integrity checks. Cleaning up.{C.RESET}")
+                safe_remove(candidate)
     else:
         for parent_dir in media_p.parent.glob("muxed_*"):
             if parent_dir.is_dir():
                 candidate = parent_dir / f"{base}.{out_ext}"
-                if candidate.exists() and candidate.stat().st_size >= MUXED_MIN_BYTES:
-                    existing_out_path = candidate
-                    break
+                if candidate.exists():
+                    ok, _ = verify_mux_output(candidate, hardsub=args.hardsub)
+                    if ok:
+                        existing_out_path = candidate
+                        break
+                    else:
+                        qprint(f"  {C.YELLOW}[!] Existing container output failed integrity checks. Cleaning up.{C.RESET}")
+                        safe_remove(candidate)
 
     if existing_out_path:
         out_path = existing_out_path
@@ -3097,6 +3182,10 @@ def process_file(
         # ── STEP 1: AUDIO EXTRACTION ──────────────────────
         audio_extracted_successfully = False
         if need_transcribe:
+            # Active checking and pre-downloading model if needed
+            qprint(f"  {C.DIM}[~] Checking Whisper model cache for '{args.model}'...{C.RESET}")
+            download_whisper_model_if_needed(args.model)
+            
             qprint(f"  {C.CYAN}> Extracting audio...{C.RESET}")
             try:
                 # Scoped file guard guarantees cleanup of intermediate audio
@@ -3151,7 +3240,7 @@ def process_file(
         # ── STEP 3: TRANSLATION ───────────────────────────
         if (
             args.translate
-            and not Context.translation_disabled
+            and not Context.is_translation_disabled()
             and not srt_tgt.exists()
             and srt_src.exists()
             and srt_src_healthy
@@ -3161,7 +3250,7 @@ def process_file(
                 Context.get_consecutive_total_failures()
                 >= CONSECUTIVE_TOTAL_FAIL_LIMIT
             ):
-                Context.translation_disabled = True
+                Context.set_translation_disabled(True)
                 qprint(
                     f"  {C.RED}[!] Translation suspended due to persistent "
                     f"communication failures.{C.RESET}"
@@ -3346,7 +3435,7 @@ def process_file(
 #  FILE ENUMERATION (with recursive support)
 # ════════════════════════════════════════════════════════════
 def enumerate_media_files(folder: Union[str, Path], recursive: bool = False) -> List[Path]:
-    """Enumerate media files in the target folder."""
+    """Enumerate media files in the target folder, preventing internal output indexing."""
     folder_path = Path(folder)
     media_files: List[Path] = []
 
@@ -3358,12 +3447,20 @@ def enumerate_media_files(folder: Union[str, Path], recursive: bool = False) -> 
     for p in files:
         if p.is_file() and p.suffix.lower() in MEDIA_EXTS:
             try:
-                # Dynamic safety checks for path traversal / symlink loops in nested directories
                 real_p = p.resolve()
                 if not is_safe_relative(real_p, folder_path):
                     logger.warning("Skipping file resolving outside target root: %s", p)
                     continue
-            except (OSError, RuntimeError):
+                
+                # Exclude any files residing inside generated output directories
+                skip_file = False
+                for part in real_p.relative_to(folder_path.resolve()).parts[:-1]:
+                    if part.startswith("muxed_"):
+                        skip_file = True
+                        break
+                if skip_file:
+                    continue
+            except (OSError, RuntimeError, ValueError):
                 continue
             media_files.append(p)
 
@@ -3427,6 +3524,29 @@ def run_self_tests() -> bool:
             failed += 1
     finally:
         Path(tmp_path).unlink(missing_ok=True)
+
+    # Test translation parser robustness against textual noise
+    sample_response = "Introduction context.\nBlock #1: Translated Hello\nBlock #2:\nTranslated World\nBlock #3: This block has conversational noise."
+    parsed_res = _parse_translation_response(sample_response)
+    if parsed_res.get(1) == "Translated Hello" and parsed_res.get(2) == "Translated World":
+        print(f"  {C.GREEN}[PASS]{C.RESET} Translation response block parsing")
+    else:
+        print(f"  {C.RED}[FAIL]{C.RESET} Translation response block parsing (Got: {parsed_res})")
+        failed += 1
+
+    # Test programmatic srt file prefix search without glob character class escaping issues
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        dir_path = Path(tmp_dir)
+        media_file = dir_path / "Movie [2023] [1080p].mp4"
+        media_file.touch()
+        srt_file = dir_path / "Movie [2023] [1080p].ja.srt"
+        srt_file.touch()
+        found_srt, srt_lang = find_source_srt(media_file, "en")
+        if found_srt == srt_file and srt_lang == "ja":
+            print(f"  {C.GREEN}[PASS]{C.RESET} Source SRT localization with path character classes")
+        else:
+            print(f"  {C.RED}[FAIL]{C.RESET} Source SRT localization with path character classes (Got: {found_srt}, lang: {srt_lang})")
+            failed += 1
         
     print(f"{C.CYAN}───────────────────────────────────────────────────────────{C.RESET}")
     if failed == 0:
@@ -3486,7 +3606,7 @@ def main() -> None:
     parser.add_argument("--verbose", action="store_true", dest="verbose", help="Enable verbose/debug output")
     parser.add_argument("--gemini-model", type=str, default=None, dest="gemini_model", help="Gemini model name (Legacy option map)")
     
-    parser.add_argument("--translator", type=str, default=None, dest="translator", help="Translator provider choice (gemini, openai, anthropic, deepl, google)")
+    parser.add_argument("--translator", type=str, default=None, choices=["gemini", "openai", "anthropic", "deepl", "google"], dest="translator", help="Translator provider choice (gemini, openai, anthropic, deepl, google)")
     parser.add_argument("--translation-model", type=str, default=None, dest="translation_model", help="Specific translation model to invoke")
     parser.add_argument("--api-url", type=str, default=None, dest="api_url", help="Custom base API gateway endpoint override")
 
@@ -3556,6 +3676,10 @@ def main() -> None:
 
     if args.model:
         args.model = args.model.lower().strip()
+        # Ensure numerical CLI shortcuts are mapped properly during initial parser steps
+        if args.model in MODEL_MAP:
+            args.model = MODEL_MAP[args.model]
+            
         model_aliases = {
             "large-v3-turbo": "large-v3-turbo",
             "largev3turbo": "large-v3-turbo",
